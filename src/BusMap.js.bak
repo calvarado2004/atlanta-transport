@@ -1,0 +1,192 @@
+/* global google */
+
+import React, {useEffect, useRef} from 'react';
+import './BusMap.css';
+
+function BusMap() {
+    const mapRef = useRef(null);
+    const heatmapDataRef = useRef([]);
+    const heatmapLayerRef = useRef(null);
+
+
+    function fetchCrimeData() {
+        fetch('http://127.0.0.1:5050/api/crime_data', {
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+            }})
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                heatmapDataRef.current = data.map(point => new google.maps.LatLng(point.lat, point.lng));
+
+                if (heatmapLayerRef.current) {
+                    heatmapLayerRef.current.setMap(null);
+                }
+
+                heatmapLayerRef.current = new google.maps.visualization.HeatmapLayer({
+                    data: heatmapDataRef.current,
+                    map: mapRef.current,
+                    radius: 20
+                });
+            });
+    }
+
+    useEffect(() => {
+        const busMarkers = {};
+        let routePaths = {};
+        let map;
+
+        function drawRoutes() {
+            fetch('http://127.0.0.1:8080/shapes', {
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                }})
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // Group data by RouteID
+                    let groupedByRouteID = {};
+
+                    data.forEach(shape => {
+                        if (!groupedByRouteID[shape.ShapeId]) {
+                            groupedByRouteID[shape.ShapeId] = [];
+                        }
+                        groupedByRouteID[shape.ShapeId].push({
+                            lat: shape.Latitude,
+                            lng: shape.Longitude
+                        });
+                    });
+
+                    // Fetch route colors
+                    fetch('http://127.0.0.1:8080/routes', {
+                        headers: {
+                            'Accept': 'application/json',
+                            'Content-Type': 'application/json',
+                        }})
+                        .then(response => {
+                            if (!response.ok) {
+                                throw new Error('Network response was not ok');
+                            }
+                            return response.json();
+                        })
+                        .then(routes => {
+                            const routeColors = {};
+                            routes.forEach(route => {
+                                routeColors[route.ID] = `#${route.Color}`;
+                            });
+
+                            // Draw paths for each route
+                            for (let [routeID, coordinates] of Object.entries(groupedByRouteID)) {
+                                if (routePaths[routeID]) {
+                                    routePaths[routeID].setMap(null); // Clear previous path
+                                }
+
+                                routePaths[routeID] = new google.maps.Polyline({
+                                    path: coordinates,
+                                    geodesic: true,
+                                    strokeColor: routeColors[routeID] || '#0f18c9', // Use route color or default to blue
+                                    strokeOpacity: 1.0,
+                                    strokeWeight: 2
+                                });
+
+                                routePaths[routeID].setMap(map);
+                            }
+                        });
+                });
+        }
+
+        function fetchBusPositions() {
+            fetch('http://127.0.0.1:8080/bus-positions', {
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                }})
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    const newBusIds = new Set(data.map(bus => bus.ID));
+
+                    // Clear markers for buses no longer in the new data
+                    for (let busId in busMarkers) {
+                        if (!newBusIds.has(busId)) {
+                            busMarkers[busId].setMap(null);
+                            delete busMarkers[busId];
+                        }
+                    }
+
+                    for (let bus of data) {
+                        const position = new google.maps.LatLng(bus.Latitude, bus.Longitude);
+
+                        if (busMarkers[bus.ID]) {
+                            // Update position if marker already exists
+                            busMarkers[bus.ID].setPosition(position);
+                        } else {
+
+                            // Create new marker if it doesn't exist
+                            const busIcon = {
+                                url: '/assets/bus-icon2.png', // Path to the bus icon served by your Go server
+                                scaledSize: new google.maps.Size(64, 64),
+                                rotation: bus.Bearing, // Rotate icon based on bus bearing
+                            };
+
+                            busMarkers[bus.ID] = new google.maps.Marker({
+                                position: position,
+                                map: map,
+                                icon: busIcon,
+                                label: bus.Label,
+                                title: bus.ID,
+                            });
+                        }
+                    }
+                });
+        }
+
+        function initMap() {
+            mapRef.current = new google.maps.Map(document.getElementById("map"), {
+                zoom: 10,
+                center: { lat: 33.7769, lng: -84.3895 }
+            });
+
+            fetchCrimeData();
+            fetchBusPositions();
+            drawRoutes();
+        }
+
+        if (!window.google) {
+            const script = document.createElement("script");
+            script.src = "https://maps.googleapis.com/maps/api/js?key=AIzaSyCs6lKA0oR1Z-W9w5Chbh_F8dI-SijAub8&libraries=visualization&callback=initGoogleMaps";
+            script.async = true;
+            document.body.appendChild(script);
+
+            window.initGoogleMaps = initMap;
+
+            return () => {
+                document.body.removeChild(script);
+                delete window.initGoogleMaps;
+            };
+        }
+
+
+    }, []);
+
+
+    return (
+        <div id="map"></div>
+    );
+}
+
+export default BusMap;
